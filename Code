@@ -1,1 +1,217 @@
+# Packages ----------------------------------------------------------------
+
+# install.packages("shiny")
+# install.packages ("writexl")
+# install.packages ("readxl")
+# install.packages ("sqldf") 
+# install.packages("dplyr")
+# install.packages("data.table")
+# install.packages("shinydashboard")
+# install.packages("shinycssloaders")
+# install.packages("reshape2")
+# install.packages("tibble")
+# install.packages ("DT")
+# install.packages ("datasets")
+
+# Libraries  --------------------------------------------------------------
+
+library (shiny)
+library (writexl)
+library (readxl)
+library(sqldf)
+library (dplyr)
+library(data.table)
+library(shinydashboard)
+library(shinycssloaders)
+library (reshape2)
+library (tibble)
+library (DT)
+library (datasets)
+
+# UI  ---------------------------------------------------------------------
+
+ui <- dashboardPage(
+  dashboardHeader(title = "TotalCare - ER Metrics", titleWidth = 270)
+  
+  ,dashboardSidebar(sidebarMenu(                                          
+    menuItem("Latest Data", tabName ="latest", icon = icon("search"))
+    ,menuItem("Daily Data", tabName ="daily", icon = icon("search"))
+  )
+  )
+  
+  ,dashboardBody(tabItems(
+    tabItem(tabName = "latest"
+            ,box(title = "Latest Data Overview",solidHeader = T, status = "primary"
+                  ,downloadButton('downloadData', "Download"))
+            ,mainPanel(withSpinner(DT::dataTableOutput("latesttbl")))
+    ) 
+    ,tabItem(tabName = "daily"
+             ,box(title = "Daily Data Overview",solidHeader = T, status = "primary"
+                   ,downloadButton('downloadData2', "Download"))
+             ,mainPanel(withSpinner(DT::dataTableOutput("dailytbl")))
+    ) 
+  )
+  )
+)
+
+# Server ------------------------------------------------------------------
+
+server <- function(input, output) {
+  
+  # Get Data Ready ----------------------------------------------------------
+  
+  # LENOVO: 
+  # ER_Data <- read_excel("C:\\Users\\f.karam\\Desktop\\CH1.xlsx", sheet = 3)
+  
+  # MACBOOK: 
+  # ER_Data <- read_excel("Desktop/CH1.XLSX", sheet = 3)
+  
+  ER_Data <- read_excel("Desktop/CH2.XLSX")
+  
+  # Filtered / Replace / Clean Data 
+  
+  # Re-name Column Names 
+  
+  colnames(ER_Data)
+  
+  names(ER_Data)[names(ER_Data) == "Date Of Service"] <- "Service_Date"
+  names(ER_Data)[names(ER_Data) == "Hospital Account Number"] <- "HAN"
+  names(ER_Data)[names(ER_Data) == "Chief Complaint"] <- "Complaint"
+  names(ER_Data)[names(ER_Data) == "Disposition Status"] <- "Disposition"
+  
+  
+  # Column Type 
+  
+  ER_Data$Service_Date <- as.Date(ER_Data$Service_Date, format = "%Y%m%d") 
+  #ER_Data$Service_Date <- as.character(ER_Data$Service_Date)
+  
+  str(ER_Data$FACNO)
+  
+  # Add Facility Name 
+  
+  ER_Data <- ER_Data %>% mutate (Facility = 
+                                   case_when ( FACNO == "702" ~ "Benbrook", 
+                                               FACNO == "723" ~ "Denton",
+                                               FACNO == "738" ~ "Weatherford",
+                                               FACNO == "741" ~ "West 7th",
+                                               FACNO == "742" ~ "Arlington",
+                                               FACNO == "763" ~ "Cedar Hill",
+                                               FACNO == "764" ~ "DeSoto"
+                                   )
+  ) 
+  # Filter Data NULL insurances to NULL Character 
+  ER_Data$Insurances[is.na(ER_Data$Insurances)] = "null"
+  
+  # Filter Data to Latest Date
+  
+  filtered_data <- sqldf ("SELECT *
+                  FROM ER_Data
+                  WHERE Service_Date = (SELECT MAX(Service_Date) FROM ER_Data)")
+  
+  
+  # Requested Data - Latest Date 
+  
+  new_data <- sqldf ("select Facility
+              , count (*) as Total_Patients
+              , count (case when Insurances NOT IN ('null') 
+                AND Insurances NOT LIKE ('%self%') 
+                AND Insurances NOT LIKE ('%SELF%') 
+                AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') then Insurances else null end) 
+                as Insured_Patients
+              , count 
+              (case when Insurances IN ('null') AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurances LIKE ('%self%') AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurances LIKE ('%SELF%') AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') 
+              then Insurances else null end) as Self_Pay
+              , count (case when Disposition IN ('LWBS', 'Left without being seen') then Disposition else null end) as LWBS
+              , count (case when Disposition IN ('MSE') then Disposition else null end) as MSE
+              , count (case when Disposition IN ('OBS', 'Short-Term Observation') then Disposition else null end) as OBS
+              , count (case when Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%covid%') then Complaint else null end) as COVID_Patients
+              , count (case when Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%covid%') then Complaint else null end) as NON_COVID_Patients
+              from filtered_data 
+              group by Facility")
+  
+  # Transpose rows and columns 
+  # tnew_data <- t(new_data)
+  
+  # Names of columns = first row 
+  # names(tnew_data) <- tnew_data[1,]
+  # Delete the first row (Since it is the name of columns)
+  # tnew_data <- tnew_data[-1,]
+  # Change tnew_data to a dataframe type 
+  # tnew_data <- as.data.frame(tnew_data)
+  # Rename columns 
+  # names(tnew_data)[1] <- 'CedarHill'
+  # names(tnew_data)[2] <- 'DeSoto'
+  
+  
+  # Requested Data - Grouped by Date  
+  
+  new_data_2 <- sqldf ("select Facility
+              , Service_Date
+              , count (*) as Total_Patients
+              , count (case when Insurances NOT IN ('null') 
+                AND Insurances NOT LIKE ('%self%') 
+                AND Insurances NOT LIKE ('%SELF%') 
+                AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') then Insurances else null end) as Insured_Patients
+              , count 
+              (case when Insurances IN ('null') AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurances LIKE ('%self%') AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurances LIKE ('%SELF%') AND Disposition NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') 
+              then Insurances else null end) as Self_Pay
+              , count (case when Disposition IN ('LWBS', 'Left without being seen') then Disposition else null end) as LWBS
+              , count (case when Disposition IN ('MSE') then Disposition else null end) as MSE
+              , count (case when Disposition IN ('OBS', 'Short-Term Observation') then Disposition else null end) as OBS
+              , count (case when Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%covid%') then Complaint else null end) as COVID_Patients
+              , count (case when Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%covid%') then Complaint else null end) as NON_COVID_Patients
+              from ER_Data 
+              group by Facility, Service_Date")
+  
+  
+  # Render DT  --------------------------------------------------------------
+  
+  output$latesttbl = DT::renderDataTable(
+    new_data
+    ,class = "display nowrap compact" # style
+    ,filter = "top"
+  )
+  
+  output$dailytbl = DT::renderDataTable(
+    new_data_2
+    ,class = "display nowrap compact" # style
+    ,filter = "top"
+  )
+  
+  
+  
+  
+  # Download Data  ----------------------------------------------------------
+  output$downloadData <- downloadHandler(
+    
+    filename = function() {
+      paste("LatestData",Sys.Date(),".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(apply(new_data,2,as.character), file, row.names = FALSE)})
+  
+  output$downloadData2 <- downloadHandler(
+    
+    filename = function() {
+      paste("PreviousData",Sys.Date(),".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(apply(new_data_2,2,as.character), file, row.names = FALSE)})
+  
+}
+
+
+
+# Run App -----------------------------------------------------------------
+shinyApp(ui, server)
+
+
 
