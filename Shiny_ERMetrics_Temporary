@@ -1,0 +1,458 @@
+# Packages ----------------------------------------------------------------
+
+# install.packages("shiny")
+# install.packages ("writexl")
+# install.packages ("readxl")
+# install.packages ("sqldf") 
+# install.packages("dplyr")
+# install.packages("data.table")
+# install.packages("shinydashboard")
+# install.packages("shinycssloaders")
+# install.packages("reshape2")
+# install.packages("tibble")
+# install.packages ("DT")
+# install.packages ("datasets")
+
+# Libraries  --------------------------------------------------------------
+
+library (shiny)
+library (writexl)
+library (readxl)
+library(sqldf)
+library (dplyr)
+library(data.table)
+library(shinydashboard)
+library(shinycssloaders)
+library (reshape2)
+library (tibble)
+library (DT)
+library (datasets)
+library(tidyr)
+library(stringr)
+library(readr)
+library(lubridate)
+library (writexl)
+library (tidyverse)
+
+# UI  ---------------------------------------------------------------------
+
+ui <- dashboardPage(
+  dashboardHeader(title = "TotalCare - ER Metrics", titleWidth = 270)
+  
+  ,dashboardSidebar(sidebarMenu(
+    menuItem("Raw Cleaned Data", tabName ="raw", icon = icon("search"))
+    ,menuItem("Latest ER Data", tabName ="latest", icon = icon("search"))
+    ,menuItem("Daily ER Data", tabName ="daily", icon = icon("search"))
+    #,menuItem("Total Google Reviews", tabName ="totalgoogle", icon = icon("search"))
+    #,menuItem("Latest Google Reviews", tabName ="latestgoogle", icon = icon("search"))
+  )
+  )
+  
+  ,dashboardBody(tabItems(
+    
+    tabItem(tabName = "raw"
+            ,fileInput("fileraw", "Choose CSV File",
+                       multiple = TRUE,
+                       accept = ".csv")
+            ,mainPanel(withSpinner(DT::dataTableOutput("contents")))
+    ) 
+    
+    ,tabItem(tabName = "latest"
+             ,box(title = "Latest Data Overview",solidHeader = T, status = "primary"
+             ,downloadButton('downloadData', "Download"))
+             ,mainPanel(withSpinner(DT::dataTableOutput("latesttbl")))
+    ) 
+    
+    ,tabItem(tabName = "daily"
+             ,box(title = "Daily Data Overview",solidHeader = T, status = "primary"
+                  ,downloadButton('downloadData2', "Download"))
+             ,mainPanel(withSpinner(DT::dataTableOutput("dailytbl")))
+    )
+    ,tabItem(tabName = "totalgoogle"
+             ,fileInput("filegoogle", "Choose CSV File",
+                        multiple = TRUE,
+                        accept = ".csv")
+             ,mainPanel(withSpinner(DT::dataTableOutput("tgoogletbl")))
+    )
+    ,tabItem(tabName = "latestgoogle"
+             ,mainPanel(withSpinner(DT::dataTableOutput("lgoogletbl")))
+    )
+  )
+  )
+)
+
+# Server ------------------------------------------------------------------
+
+server <- function(input, output) {
+  
+  
+  # Input Files  -------------------------------------------------------------
+  
+  raw_data <- reactive({
+    req(input$fileraw)
+    
+    ext <- tools::file_ext(input$fileraw$name)
+    switch(ext,
+           csv = vroom::vroom(input$fileraw$datapath, delim = ","),
+           validate("Invalid file; Please upload a .csv")
+    )
+  })
+  
+  raw_data_cleaned <- reactive({
+    total_data <- raw_data()
+    
+    ###
+    total_data <- total_data %>% mutate (Facility = case_when (FacNo == "702" ~ "Benbrook", 
+                                                               FacNo == "723" ~ "Denton",
+                                                               FacNo == "738" ~ "Weatherford",
+                                                               FacNo == "741" ~ "West 7th",
+                                                               FacNo == "742" ~ "Arlington",
+                                                               FacNo == "763" ~ "Cedar Hill",
+                                                               FacNo == "764" ~ "DeSoto"
+    )
+    )
+    ###
+    total_data <- total_data %>%
+      rename(Complaint = `CHIEF COMPLAINT`) %>%
+      rename(Gender = GEN) %>%
+      rename(Discharge.Instruction = `DISCHARGE INSTRUCTIONS`) %>%
+      rename(Diagnosis = `FINAL IMPRESSION`) %>%
+      rename(Insurance = `Pri Name`) %>%
+      rename(First.Physician = `PRIMARY PHYS`) %>%
+      rename(Secondary.Ins = `Sec Name`) %>%
+      rename(STO.End = `STO - End`) %>%
+      rename(STO.Start = `STO - Start`)
+    ###
+    total_data <- mutate(total_data, COVID = 
+                           ifelse(is.na(Complaint), FALSE, str_detect(Complaint, "COVID|ovid")) 
+                         | ifelse(is.na(Discharge.Instruction), FALSE, str_detect(Discharge.Instruction, "COVID")) 
+                         | ifelse(is.na(Diagnosis), FALSE, str_detect(Diagnosis, "COVID|CORONA")))
+    ###
+    total_data <- mutate(total_data, STO = !is.na(STO.Start) | !is.na(STO.End))
+    ###
+    total_data <- mutate(total_data, DOS =mdy(DOS))
+    
+    ARR <- vector()
+    DEP <- vector()
+    EKG <- vector()
+    STO.S <- vector()
+    STO.E <- vector()
+    
+    for (i in 1:nrow(total_data)) {
+      if(is.na(total_data[[i,'ARRIVAL DT/TM']])) {
+        ARR <- c(ARR, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'ARRIVAL DT/TM']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        ARR <- c(ARR, date_string)
+      }
+      if(is.na(total_data[[i,'DISCHARGE DT/TM']])) {
+        DEP <- c(DEP, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'DISCHARGE DT/TM']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        DEP <- c(DEP, date_string)
+      }
+      if(is.na(total_data[[i,'EKG DT/TM']])) {
+        EKG <- c(EKG, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'EKG DT/TM']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        EKG <- c(EKG, date_string)
+      }
+      if(is.na(total_data[[i,'STO.Start']])) {
+        STO.S <- c(STO.S, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'STO.Start']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        STO.S <- c(STO.S, date_string)
+      }
+      if(is.na(total_data[[i,'STO.End']])) {
+        STO.E <- c(STO.E, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'STO.End']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        STO.E <- c(STO.E, date_string)
+      }
+    }
+    
+    total_data <- cbind(total_data, ARR)
+    total_data <- cbind(total_data, DEP)
+    total_data <- cbind(total_data, EKG)
+    total_data <- cbind(total_data, STO.S)
+    total_data <- cbind(total_data, STO.E)
+    
+    total_data <- total_data %>%
+      mutate(ARRIVE = mdy_hm(ARR)) %>%
+      mutate(DEPART = mdy_hm(DEP)) %>%
+      mutate(EKG.Time = mdy_hm(EKG)) %>%
+      mutate(STO.Start = mdy_hm(STO.S)) %>%
+      mutate(STO.End = mdy_hm(STO.E))
+    
+    for (i in 1:nrow(total_data)) {
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'DEPART']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'DEPART']]) {
+          total_data[[i,'DEPART']] <- total_data[[i,'DEPART']] + years(1)
+        }
+      }
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'EKG.Time']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'EKG.Time']]) {
+          total_data[[i,'EKG.Time']] <- total_data[[i,'EKG.Time']] + years(1)
+        }
+      }
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'STO.Start']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'STO.Start']]) {
+          total_data[[i,'STO.Start']] <- total_data[[i,'STO.Start']] + years(1)
+        }
+      }
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'STO.End']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'STO.End']]) {
+          total_data[[i,'STO.End']] <- total_data[[i,'STO.End']] + years(1)
+        }
+      }
+    }
+    
+    total_data <- select(total_data, -c(ARR, DEP, EKG, STO.S, STO.E))
+    total_data <- select(total_data, -`ARRIVAL DT/TM`)
+    total_data <- select(total_data, -`DISCHARGE DT/TM`)
+    total_data <- select(total_data, -`EKG DT/TM`)
+    ###
+    
+    age_vec <- vector()
+    
+    for (i in 1:nrow(total_data)) {
+      temp <- str_split_fixed(total_data[[i, 'AGE']], " ", n = 2)
+      if(temp[2] == 'Days') {
+        temp_age <- as.numeric(temp[1])/365
+      } else {
+        temp_age <- as.numeric(temp[1])
+      }
+      age_vec <- c(age_vec, temp_age)
+    }
+    
+    total_data <- cbind(total_data, age_vec)
+    
+    total_data <- rename(total_data, Patient.Age = age_vec)
+    
+    total_data <- select(total_data, -AGE)
+    ###
+    total_data <- mutate(total_data, LOS = DEPART - ARRIVE)
+    ###
+    total_data <- rename(total_data, City.St = `City ST`)
+    total_data <- mutate(total_data, Full.Address = str_c(ADDRESS, City.St, sep = ", "))
+    ###
+    total_data <- mutate(total_data, ARRIVE.EKG = EKG.Time - ARRIVE)
+    total_data$ARRIVE.EKG <- as.numeric(total_data$ARRIVE.EKG)
+    ###
+    Rpt.Dif <- vector()
+    Rpt.Times <- vector()
+    Rpt.Address <- vector()
+    New.Patient <- vector()
+    
+    for (i in 1:nrow(total_data)) {
+      temp_data <- filter(total_data, ARRIVE < total_data[[i,'ARRIVE']])
+      if(is.na(total_data[[i,'MRN']])) {
+        Rpt.Dif <- c(Rpt.Dif, NA)
+        Rpt.Times <- c(Rpt.Times, NA)
+      } else {
+        if(total_data[[i,'MRN']] %in% temp_data$MRN) {
+          Rpt.Dif <- c(Rpt.Dif, TRUE)
+          temp_mrn <- filter(temp_data, MRN == total_data[[i,'MRN']])
+          Rpt.Times <- c(Rpt.Times, (total_data[[i,'ARRIVE']] - max(temp_mrn$DEPART)))
+        } else {
+          Rpt.Dif <- c(Rpt.Dif, FALSE)
+          Rpt.Times <- c(Rpt.Times, NA)
+        }
+      }
+      
+      if(is.na(total_data[[i,'ADDRESS']]) | is.na(total_data[[i,'City.St']])) {
+        Rpt.Address <- c(Rpt.Address, NA)
+      } else {
+        temp_add_frame <- filter(total_data, ARRIVE < (total_data[[i,'ARRIVE']] - hours(2)))
+        temp_add_frame <- filter(temp_add_frame, MRN != total_data[[i,'MRN']])
+        temp_rptadd <- ifelse(total_data[[i,'Full.Address']] %in% temp_add_frame$Full.Address, TRUE, FALSE)
+        Rpt.Address <- c(Rpt.Address, temp_rptadd)
+      }
+    }
+    
+    total_data <- cbind(total_data, Rpt.Dif)
+    total_data <- cbind(total_data, Rpt.Address)
+    total_data <- cbind(total_data, Rpt.Times)
+    
+    total_data$LOS <- as.numeric(total_data$LOS)
+    ###
+    for (i in 1:nrow(total_data)) {
+      if(is.na(total_data[[i,'MRN']])) {
+        New.Patient <- c(New.Patient, NA)
+      } else {
+        temp_data <- filter(total_data, ARRIVE < total_data[[i,'ARRIVE']])
+        temp_new <- ifelse(total_data[[i,'MRN']] %in% temp_data$MRN, FALSE, TRUE)
+        New.Patient <- c(New.Patient, temp_new)
+      }
+    }
+    total_data <- cbind(total_data, New.Patient)
+    
+  })
+  
+  ER_data_latest <- reactive ({
+    total_data <- raw_data_cleaned()
+    
+    total_data$Insurance[is.na(total_data$Insurance)] = "null"
+    
+    filtered_data <- sqldf ("SELECT *
+                  FROM total_data
+                  WHERE DOS = (SELECT MAX(DOS) FROM total_data)")
+    
+    new_data <- sqldf ("select Facility
+              , count (*) as Total_Patients
+              , count (case when Insurance NOT IN ('null') 
+                AND Insurance NOT LIKE ('%self%') 
+                AND Insurance NOT LIKE ('%SELF%') 
+                AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') then Insurance else null end) 
+                as Insured_Patients
+              , count 
+              (case when Insurance IN ('null') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%self%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%SELF%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') 
+              then Insurance else null end) as Self_Pay
+              , count (case when STATUS IN ('LWBS', 'LWOBS', 'Left without being seen') then STATUS else null end) as LWBS
+              , count (case when STATUS IN ('MSE') then STATUS else null end) as MSE
+              , count (case when STATUS IN ('OBS', 'Short-Term Observation') then STATUS else null end) as OBS
+              , count (case when Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%covid%') then Complaint else null end) as COVID_Patients
+              , count (case when Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%covid%') then Complaint else null end) as NON_COVID_Patients
+              from filtered_data 
+              group by Facility")
+    
+    
+  })
+  
+  ER_data_daily <- reactive ({ 
+    
+    total_data <- raw_data_cleaned()
+    
+    total_data$Insurance[is.na(total_data$Insurance)] = "null"
+    
+    new_data_2 <- sqldf ("select Facility
+              , DOS
+              , count (*) as Total_Patients
+              , count (case when Insurance NOT IN ('null') 
+                AND Insurance NOT LIKE ('%self%') 
+                AND Insurance NOT LIKE ('%SELF%') 
+                AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') then Insurance else null end) 
+                as Insured_Patients
+              , count 
+              (case when Insurance IN ('null') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%self%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%SELF%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') 
+              then Insurance else null end) as Self_Pay
+              , count (case when STATUS IN ('LWBS', 'LWOBS', 'Left without being seen') then STATUS else null end) as LWBS
+              , count (case when STATUS IN ('MSE') then STATUS else null end) as MSE
+              , count (case when STATUS IN ('OBS', 'Short-Term Observation') then STATUS else null end) as OBS
+              , count (case when Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%covid%') then Complaint else null end) as COVID_Patients
+              , count (case when Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%covid%') then Complaint else null end) as NON_COVID_Patients
+              from total_data 
+              group by Facility, DOS")
+    
+    })
+  
+  google_raw_data <- reactive({
+    req(input$googleraw)
+    
+    ext <- tools::file_ext(input$googleraw$name)
+    switch(ext,
+           csv = vroom::vroom(input$googleraw$datapath, delim = ","),
+           validate("Invalid file; Please upload a .csv")
+    )
+  })
+  
+  google_raw_clean <- reactive ({
+    
+    bird_eye <- google_raw_data()
+    
+    names(bird_eye)[names(bird_eye) == "Review Source"]  <- "Review_Source"
+    names(bird_eye)[names(bird_eye) == "Review Rating"]  <- "Review_Rating"
+    names(bird_eye)[names(bird_eye) == "Review Comment"] <- "Review_Comment"
+    names(bird_eye)[names(bird_eye) == "Date Posted On"] <- "Review_Date"
+    names(bird_eye)[names(bird_eye) == "Reviewer Name"]  <- "Reviewer_Name"
+    
+    
+    bird_eye$Review_Date <- as.Date (bird_eye$Review_Date, format = "%a, %b %d, %Y")
+    
+    bird_eye$Review_Comment[is.na(bird_eye$Review_Comment)] = "No Review - Only Rating"
+    
+    bird_eye$Review_Rating <- as.numeric(bird_eye$Review_Rating)
+    
+    filtered_google <- sqldf ("SELECT *
+                  FROM bird_eye
+                  WHERE Review_Source == 'Google' ")
+  })
+  
+  google_total <- reactive ({
+    
+    filtered_google <- google_raw_clean() 
+    
+    Reviews1 <- sqldf ("select Location
+                    , count (Location) as Count_Reviews 
+                    , round(avg (Review_Rating), 2) as Average_Reviews 
+                    from filtered_google  
+                    group by Location
+                   ")
+    
+  })
+  
+  
+  # Render DT  ------------------------------------------------------------
+  
+  output$contents <- DT::renderDataTable({
+    total_data <- raw_data_cleaned()
+  })
+  
+  output$latesttbl = DT::renderDataTable(
+    ER_data_latest()
+    ,class = "display nowrap compact" # style
+    ,filter = "top"
+  )
+  
+  output$dailytbl = DT::renderDataTable(
+    ER_data_daily()
+    ,class = "display nowrap compact" # style
+    ,filter = "top"
+  )
+  
+  output$tgoogletbl = DT::renderDataTable({
+    google_total()
+  })
+  
+  output$lgoogletbl = DT::renderDataTable(
+    Reviews2
+    ,class = "display nowrap compact" # style
+    ,filter = "top"
+  )
+  
+  
+  # Download Data  ----------------------------------------------------------
+  output$downloadData <- downloadHandler(
+    
+    filename = function() {
+      paste("LatestData",Sys.Date(),".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(apply(new_data,2,as.character), file, row.names = FALSE)})
+  
+  output$downloadData2 <- downloadHandler(
+    
+    filename = function() {
+      paste("PreviousData",Sys.Date(),".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(apply(new_data_2,2,as.character), file, row.names = FALSE)})
+  
+  
+}
+
+# Run App -----------------------------------------------------------------
+shinyApp(ui, server)
