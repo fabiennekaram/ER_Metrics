@@ -1,0 +1,561 @@
+# Packages ----------------------------------------------------------------
+
+# install.packages("shiny")
+# install.packages ("writexl")
+# install.packages ("readxl")
+# install.packages ("sqldf") 
+# install.packages("dplyr")
+# install.packages("data.table")
+# install.packages("shinydashboard")
+# install.packages("shinycssloaders")
+# install.packages("reshape2")
+# install.packages("tibble")
+# install.packages ("DT")
+# install.packages ("datasets")
+# install.packages ("googlesheets4")
+
+# Libraries  --------------------------------------------------------------
+
+library (shiny)
+library (writexl)
+library (readxl)
+library (sqldf)
+library (dplyr)
+library (data.table)
+library (shinydashboard)
+library (shinycssloaders)
+library (reshape2)
+library (tibble)
+library (DT)
+library (datasets)
+library (tidyr)
+library (stringr)
+library (readr)
+library (lubridate)
+library (writexl)
+library (tidyverse)
+library (googlesheets4)
+library(gargle)
+
+# UI  ---------------------------------------------------------------------
+
+ui <- dashboardPage(
+  dashboardHeader(title = "TotalCare - ER Metrics", titleWidth = 270)
+  
+  ,dashboardSidebar(sidebarMenu(
+     menuItem("Raw Cleaned Data", tabName ="raw", icon = icon("search"))
+    ,menuItem("Latest ER Data", tabName ="latest", icon = icon("search"))
+    ,menuItem("Daily ER Data", tabName ="daily", icon = icon("search"))
+                               )
+                   )
+  
+  ,dashboardBody(tabItems(
+    
+    tabItem(tabName = "raw"
+            ,fileInput('fileraw', 'Choose xlsx file',
+                       accept = c(".xlsx")
+                      )
+            #,mainPanel(withSpinner(DT::dataTableOutput("contents")))
+           ) 
+    
+    ,tabItem(tabName = "latest"
+             ,box(title = "Latest Data Overview", solidHeader = T, status = "primary"
+                  ,downloadButton('downloadData', "Download"))
+             ,mainPanel(withSpinner(DT::dataTableOutput("latesttbl")))
+            ) 
+    
+    ,tabItem(tabName = "daily"
+             ,box(title = "Daily Data Overview",solidHeader = T, status = "primary"
+                  ,downloadButton('downloadData2', "Download"))
+             ,mainPanel(withSpinner(DT::dataTableOutput("dailytbl")))
+            )
+                       )
+               )
+  
+                  )
+
+# Server ------------------------------------------------------------------
+
+server <- function(input, output) {
+  
+  # Max Request Size --------------------------------------------------------
+  
+  options(shiny.maxRequestSize = 30*1024^2)
+  
+  # Input Files  -------------------------------------------------------------
+  
+  raw_data <- reactive({
+    req(input$fileraw)
+    
+    inFile <- input$fileraw
+    
+    if(is.null(inFile))
+      return(NULL)
+    file.rename(inFile$datapath,
+                paste(inFile$datapath, ".xlsx", sep=""))
+    read_excel(paste(inFile$datapath, ".xlsx", sep=""), 1)
+  })
+  
+  raw_data_cleaned <- reactive({
+    total_data <- raw_data()
+    
+
+# Dr. Belanger - Updated Data Cleaning ------------------------------------
+
+    # Add Facility as a column ------------------------------------------------
+    
+    total_data <- total_data %>% mutate (Facility = 
+                                           case_when (FacNo == "702" ~ "Benbrook", 
+                                                      FacNo == "723" ~ "Denton",
+                                                      FacNo == "738" ~ "Weatherford",
+                                                      FacNo == "741" ~ "West 7th",
+                                                      FacNo == "742" ~ "Arlington",
+                                                      FacNo == "763" ~ "Cedar Hill",
+                                                      FacNo == "764" ~ "DeSoto"
+                                           )
+    )
+    # Rename Columns  ---------------------------------------------------------
+    
+    total_data <- total_data %>%
+      rename(Complaint = `CHIEF COMPLAINT`) %>%
+      rename(Gender = GEN) %>%
+      rename(Discharge_Instruction = `DISCHARGE INSTRUCTIONS`) %>%
+      rename(Diagnosis = `FINAL IMPRESSION`) %>%
+      rename(Insurance = `Pri Name`) %>%
+      rename(First.Physician = `PRIMARY PHYS`) %>%
+      rename(Secondary.Ins = `Sec Name`) %>%
+      rename(STO.End = `STO - End`) %>%
+      rename(STO.Start = `STO - Start`)
+    
+    
+    
+    
+    # COVID Detection column ---------------------------------------------------------
+    
+    total_data <- mutate(total_data, COVID = 
+                           ifelse(is.na(Complaint), FALSE, str_detect(Complaint, "COVID|ovid")) 
+                         | ifelse(is.na(Discharge_Instruction), FALSE, str_detect(Discharge_Instruction, "COVID")) 
+                         | ifelse(is.na(Diagnosis), FALSE, str_detect(Diagnosis, "COVID|CORONA")))
+    
+    
+    class (total_data$COVID)
+    # Create Column for STO ---------------------------------------------------
+    
+    #Next we will create a column for STO
+    total_data <- mutate(total_data, STO = !is.na(STO.Start) | !is.na(STO.End))
+    
+    # Time Column -------------------------------------------------------------
+    
+    #Now we will start to clean the times
+    class(total_data$DOS)
+    total_data <- mutate(total_data, DOS =mdy(DOS))
+    #typeof(total_data$DOS) 
+    
+    #The arrival and depart times do not include the year so we will have to add this in since some of the arrivals/departs may cross days, months, or years
+    
+    # Vectors are the simplest data structures in R. They are sequences of elements of the same basic type
+    ARR <- vector()
+    DEP <- vector()
+    EKG <- vector()
+    STO.S <- vector()
+    STO.E <- vector()
+    
+    for (i in 1:nrow(total_data)) {
+      if(is.na(total_data[[i,'ARRIVAL DT/TM']])) {
+        ARR <- c(ARR, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'ARRIVAL DT/TM']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        ARR <- c(ARR, date_string)
+      }
+      if(is.na(total_data[[i,'DISCHARGE DT/TM']])) {
+        DEP <- c(DEP, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'DISCHARGE DT/TM']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        DEP <- c(DEP, date_string)
+      }
+      if(is.na(total_data[[i,'EKG DT/TM']])) {
+        EKG <- c(EKG, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'EKG DT/TM']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        EKG <- c(EKG, date_string)
+      }
+      if(is.na(total_data[[i,'STO.Start']])) {
+        STO.S <- c(STO.S, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'STO.Start']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        STO.S <- c(STO.S, date_string)
+      }
+      if(is.na(total_data[[i,'STO.End']])) {
+        STO.E <- c(STO.E, NA)
+      } else {
+        temp <- str_split_fixed(total_data[[i, 'STO.End']], " ", n = 2)
+        date_string <- str_c(temp[1], '/', year(total_data[[i,'DOS']]), " ", temp[2])
+        STO.E <- c(STO.E, date_string)
+      }
+    }
+    
+    total_data <- cbind(total_data, ARR)
+    total_data <- cbind(total_data, DEP)
+    total_data <- cbind(total_data, EKG)
+    total_data <- cbind(total_data, STO.S)
+    total_data <- cbind(total_data, STO.E)
+    
+    total_data <- total_data %>%
+      mutate(ARRIVE = mdy_hm(ARR)) %>%
+      mutate(DEPART = mdy_hm(DEP)) %>%
+      mutate(EKG.Time = mdy_hm(EKG)) %>%
+      mutate(STO.Start = mdy_hm(STO.S)) %>%
+      mutate(STO.End = mdy_hm(STO.E))
+    
+    for (i in 1:nrow(total_data)) {
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'DEPART']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'DEPART']]) {
+          total_data[[i,'DEPART']] <- total_data[[i,'DEPART']] + years(1)
+        }
+      }
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'EKG.Time']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'EKG.Time']]) {
+          total_data[[i,'EKG.Time']] <- total_data[[i,'EKG.Time']] + years(1)
+        }
+      }
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'STO.Start']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'STO.Start']]) {
+          total_data[[i,'STO.Start']] <- total_data[[i,'STO.Start']] + years(1)
+        }
+      }
+      if(!is.na(total_data[[i,'ARRIVE']]) & !is.na(total_data[[i,'STO.End']])) {
+        if(total_data[[i,'ARRIVE']] > total_data[[i,'STO.End']]) {
+          total_data[[i,'STO.End']] <- total_data[[i,'STO.End']] + years(1)
+        }
+      }
+    }
+    
+    total_data <- select(total_data, -c(ARR, DEP, EKG, STO.S, STO.E))
+    total_data <- select(total_data, -`ARRIVAL DT/TM`)
+    total_data <- select(total_data, -`DISCHARGE DT/TM`)
+    total_data <- select(total_data, -`EKG DT/TM`)
+    
+    # Age Column --------------------------------------------------------------
+    
+    #Now we clean the age
+    
+    age_vec <- vector()
+    
+    for (i in 1:nrow(total_data)) {
+      temp <- str_split_fixed(total_data[[i, 'AGE']], " ", n = 2)
+      if(temp[2] == 'Days') {
+        temp_age <- as.numeric(temp[1])/365
+      } else {
+        temp_age <- as.numeric(temp[1])
+      }
+      age_vec <- c(age_vec, temp_age)
+    }
+    
+    total_data <- cbind(total_data, age_vec)
+    
+    total_data <- rename(total_data, Patient.Age = age_vec)
+    
+    total_data <- select(total_data, -AGE)
+    
+    # New Column LOS ----------------------------------------------------------
+    
+    #Now we compute LOS
+    total_data <- mutate(total_data, LOS = DEPART - ARRIVE)
+    
+    
+    # New Full Address Column  ------------------------------------------------
+    
+    #Now we create a full address so that Google can recognize this
+    total_data <- rename(total_data, City.St = `City ST`)
+    total_data <- mutate(total_data, Full.Address = str_c(ADDRESS, City.St, sep = ", "))
+    
+    
+    # New Column (Compute Time to EKG) ----------------------------------------
+    
+    #Now we compute time to EKG
+    total_data <- mutate(total_data, ARRIVE.EKG = EKG.Time - ARRIVE)
+    total_data$ARRIVE.EKG <- as.numeric(total_data$ARRIVE.EKG)
+    
+    
+    # Repeat Different / Same Day Customers && Same Address Diff Days ---------
+    
+    #Now we calculate repeat different and same-day customers, as well as repeat visits from the same address on different days
+    Rpt.Dif <- vector()
+    Rpt.Times <- vector()
+    Rpt.Address <- vector()
+    New.Patient <- vector()
+    
+    for (i in 1:nrow(total_data)) {
+      temp_data <- filter(total_data, ARRIVE < total_data[[i,'ARRIVE']])
+      if(is.na(total_data[[i,'MRN']])) {
+        Rpt.Dif <- c(Rpt.Dif, NA)
+        Rpt.Times <- c(Rpt.Times, NA)
+      } else {
+        if(total_data[[i,'MRN']] %in% temp_data$MRN) {
+          Rpt.Dif <- c(Rpt.Dif, TRUE)
+          temp_mrn <- filter(temp_data, MRN == total_data[[i,'MRN']])
+          Rpt.Times <- c(Rpt.Times, (total_data[[i,'ARRIVE']] - max(temp_mrn$DEPART)))
+        } else {
+          Rpt.Dif <- c(Rpt.Dif, FALSE)
+          Rpt.Times <- c(Rpt.Times, NA)
+        }
+      }
+      
+      if(is.na(total_data[[i,'ADDRESS']]) | is.na(total_data[[i,'City.St']])) {
+        Rpt.Address <- c(Rpt.Address, NA)
+      } else {
+        temp_add_frame <- filter(total_data, ARRIVE < (total_data[[i,'ARRIVE']] - hours(2)))
+        temp_add_frame <- filter(temp_add_frame, MRN != total_data[[i,'MRN']])
+        temp_rptadd <- ifelse(total_data[[i,'Full.Address']] %in% temp_add_frame$Full.Address, TRUE, FALSE)
+        Rpt.Address <- c(Rpt.Address, temp_rptadd)
+      }
+    }
+    
+    total_data <- cbind(total_data, Rpt.Dif)
+    total_data <- cbind(total_data, Rpt.Address)
+    total_data <- cbind(total_data, Rpt.Times)
+    
+    total_data$LOS <- as.numeric(total_data$LOS)
+    
+    
+    # Loop Function to identify new patients ----------------------------------
+    
+    
+    #Now we will make a loop function that identifies new patients
+    for (i in 1:nrow(total_data)) {
+      if(is.na(total_data[[i,'MRN']])) {
+        New.Patient <- c(New.Patient, NA)
+      } else {
+        temp_data <- filter(total_data, ARRIVE < total_data[[i,'ARRIVE']])
+        temp_new <- ifelse(total_data[[i,'MRN']] %in% temp_data$MRN, FALSE, TRUE)
+        New.Patient <- c(New.Patient, temp_new)
+      }
+    }
+    total_data <- cbind(total_data, New.Patient)
+    
+    
+
+# Add ER Metrics Columns to Original Cleaned DF ---------------------------
+
+    # Change Insurance NAs to "Null" ------------------------------------------
+    total_data$Insurance[is.na(total_data$Insurance)] = "null"
+    
+    
+    
+    # Create New Insured Column -----------------------------------------------
+    total_data$Insured_New <- with(total_data
+                                   , ifelse(!Insurance %in% c("null","self", "SELF", "SELP PAY",  "SELF PAY") 
+                                            & !STATUS %in% c ("LWBS", "MSE", "OBS", "Short-Term Observation")
+                                            , 'Yes', 'No'))
+    
+    
+    
+    # Create New Self-Pay Column ----------------------------------------------
+    total_data$Self_Pay_New <- with(total_data
+                                    , ifelse (Insurance  == "null" & !STATUS %in% c ("LWBS", "MSE", "OBS", "Short-Term Observation") 
+                                              | Insurance  == "self" & !STATUS %in% c ("LWBS", "MSE", "OBS", "Short-Term Observation")
+                                              | Insurance  == "SELF" & !STATUS %in% c ("LWBS", "MSE", "OBS", "Short-Term Observation")
+                                              | Insurance  == "SELP PAY" & !STATUS %in% c ("LWBS", "MSE", "OBS", "Short-Term Observation")
+                                              | Insurance  == "SELF PAY" & !STATUS %in% c ("LWBS", "MSE", "OBS", "Short-Term Observation")
+                                              , 'Yes', 'No'))
+    
+    
+    
+    # Create New Status Column ------------------------------------------------
+    total_data <- mutate(total_data, Status_New = 
+                           ifelse(STATUS %in% c ('LWBS', 'LWOBS', 'Left without being seen'), "LWOBS"
+                                  , ifelse(STATUS %in% ('MSE'), "MSE"
+                                           , ifelse(STATUS %in% c ('OBS', 'Short-Term Observation'), "OBS", "None"))))
+    
+    
+    
+    # Create New COVID Column -------------------------------------------------
+    total_data <- mutate(total_data, COVID_New = 
+                           ifelse(is.na(Complaint), FALSE, str_detect(Complaint, "COVID|ovid")) 
+                         | ifelse(is.na(Discharge_Instruction), FALSE, str_detect(Discharge_Instruction, "COVID")) 
+                         | ifelse(is.na(Diagnosis), FALSE, str_detect(Diagnosis, "COVID|CORONA")))
+    
+    
+    #write_xlsx(total_data,"C:\\Users\\f.karam\\Desktop\\delete.xlsx")
+    
+    
+    
+  })
+  
+  ER_data_latest <- reactive ({
+    total_data <- raw_data_cleaned()
+    
+    total_data$Insurance[is.na(total_data$Insurance)] = "null"
+    
+    filtered_data <- sqldf ("SELECT *
+                  FROM total_data
+                  WHERE DOS = (SELECT MAX(DOS) FROM total_data)")
+    
+    new_data <- sqldf ("select Facility
+              , count (*) as Total_Patients
+              
+              , count (case when Insurance NOT IN ('null') 
+                AND Insurance NOT LIKE ('%self%') 
+                AND Insurance NOT LIKE ('%SELF%')
+                AND Insurance NOT LIKE ('%SELP PAY%')
+                AND Insurance NOT LIKE ('%SELF PAY%')
+                AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') then Insurance else null end) 
+                as Insured_Patients
+                
+              , count 
+              (case when Insurance IN ('null') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%self%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%SELF%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') 
+                OR Insurance  LIKE ('%SELP PAY%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%SELF PAY%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+              then Insurance else null end) as Self_Pay
+              
+              , count (case when STATUS IN ('LWBS', 'LWOBS', 'Left without being seen') then STATUS else null end) as LWBS
+              
+              , count (case when STATUS IN ('MSE') then STATUS else null end) as MSE
+              
+              , count (case when STATUS IN ('OBS', 'Short-Term Observation') then STATUS else null end) as OBS
+              
+              , count (case when Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%covid%') 
+                OR Discharge_Instruction LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%CORONA%')
+                then Complaint else null end) as COVID_Patients
+                
+              , count (case when Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%covid%') 
+                AND Discharge_Instruction NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%CORONA%')
+                then Complaint else null end) as NON_COVID_Patients
+                
+              from filtered_data 
+              group by Facility")
+    
+    
+  })
+  
+  ER_data_daily <- reactive ({ 
+    
+    total_data <- raw_data_cleaned()
+    
+    total_data$Insurance[is.na(total_data$Insurance)] = "null"
+    
+    new_data_2 <- sqldf ("select Facility
+              , DOS
+              , count (*) as Total_Patients
+              
+              , count (case when Insurance NOT IN ('null') 
+                AND Insurance NOT LIKE ('%self%') 
+                AND Insurance NOT LIKE ('%SELF%')
+                AND Insurance NOT LIKE ('%SELP PAY%')
+                AND Insurance NOT LIKE ('%SELF PAY%')
+                AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') then Insurance else null end) 
+                as Insured_Patients
+                
+              , count 
+              (case when Insurance IN ('null') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%self%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%SELF%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation') 
+                OR Insurance  LIKE ('%SELP PAY%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+                OR Insurance LIKE ('%SELF PAY%') AND STATUS NOT IN ('LWBS', 'MSE', 'OBS', 'Short-Term Observation')
+              then Insurance else null end) as Self_Pay
+              
+              , count (case when STATUS IN ('LWBS', 'LWOBS', 'Left without being seen') then STATUS else null end) as LWBS
+              
+              , count (case when STATUS IN ('MSE') then STATUS else null end) as MSE
+              
+              , count (case when STATUS IN ('OBS', 'Short-Term Observation') then STATUS else null end) as OBS
+              
+              , count (case when Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%covid%') 
+                OR Discharge_Instruction LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%CORONA%')
+                then Complaint else null end) as COVID_Patients
+                
+              , count (case when Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%covid%') 
+                AND Discharge_Instruction NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%CORONA%')
+                then Complaint else null end) as NON_COVID_Patients
+                
+              from total_data 
+              group by Facility, DOS")
+    
+    
+  })
+  
+  
+  # Google Sheet Append -----------------------------------------------------
+  
+  saveData <- function(data1) {
+    # The data must be a dataframe rather than a named vector
+    data1 <- data1 %>% as.list() %>% data.frame()
+    # Add the data as a new row
+    
+    # sheet_write(data1 , "1kQMy5O3C0D64n9RZMhOH_La6aIEpD8_qra5chBw7IJU" , "temp2")
+    # testtest <- gs4_create("Test")
+    
+    sheet_append("1kQMy5O3C0D64n9RZMhOH_La6aIEpD8_qra5chBw7IJU", data1 , "temp2")
+    
+  }
+  
+  observeEvent(input$fileraw, {
+    saveData(raw_data_cleaned())
+  })
+  
+  # loadData <- function() {
+  #   # Read the data
+  #   read_sheet("1kQMy5O3C0D64n9RZMhOH_La6aIEpD8_qra5chBw7IJU")
+  # }
+  
+  # Render DT  ------------------------------------------------------------
+  
+  # output$contents <- DT::renderDataTable({
+  #   total_data <- raw_data_cleaned()
+  # })
+  
+  
+  output$latesttbl = DT::renderDataTable(
+    ER_data_latest()
+    ,class = "display nowrap compact" # style
+    ,filter = "top"
+  )
+  
+  output$dailytbl = DT::renderDataTable(
+    ER_data_daily()
+    ,class = "display nowrap compact" # style
+    ,filter = "top"
+  )
+  
+  
+  # Download Data  ----------------------------------------------------------
+  output$downloadData <- downloadHandler(
+    
+    filename = function() {
+      paste("LatestData",Sys.Date(),".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(apply(ER_data_latest(),2,as.character), file, row.names = FALSE)})
+  
+  output$downloadData2 <- downloadHandler(
+    
+    filename = function() {
+      paste("PreviousData",Sys.Date(),".csv", sep = "")
+    },
+    content = function(file) {
+      write.csv(apply(ER_data_daily(),2,as.character), file, row.names = FALSE)})
+  
+  
+}
+
+# Run App -----------------------------------------------------------------
+
+shinyApp(ui, server)
