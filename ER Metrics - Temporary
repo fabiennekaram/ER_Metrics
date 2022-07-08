@@ -1,0 +1,277 @@
+####### Updated Version - MIRA ######## 
+
+# Packages ----------------------------------------------------------------
+
+# install.packages ("writexl")
+# install.packages ("readxl")
+# install.packages ("sqldf") 
+# install.packages("dplyr")
+# install.packages("tibble")
+# install.packages("readr")
+
+# Library --------------------------------------------------------------
+
+library (writexl)
+library (readxl)
+library(sqldf)
+library (dplyr)
+library (readr)
+
+# Import Data into R  --------------------------------------------------
+
+# LENOVO: 
+total_data <- read_excel("C:\\Users\\f.karam\\Desktop\\DD12.xlsx")
+
+# MACBOOK: 
+# ER_Data <- read_excel("Desktop/CH1.XLSX", sheet = 3)
+
+# ER_Data <- read_excel("Desktop/CH2.XLSX")
+
+# Add Facility as a column ------------------------------------------------
+
+total_data <- total_data %>% mutate (Facility = 
+                                       case_when (FacNo == "702" ~ "Benbrook", 
+                                                  FacNo == "723" ~ "Denton",
+                                                  FacNo == "738" ~ "Weatherford",
+                                                  FacNo == "741" ~ "West 7th",
+                                                  FacNo == "742" ~ "Arlington",
+                                                  FacNo == "763" ~ "Cedar Hill",
+                                                  FacNo == "764" ~ "DeSoto",
+                                                  FacNo == "798" ~ "Frisco"
+                                                  
+                                       )
+)
+
+#write_xlsx(total_data,"C:\\Users\\f.karam\\Desktop\\QRSteph1.xlsx")
+
+
+# Rename Columns  ---------------------------------------------------------
+
+total_data <- total_data %>%
+  rename(Complaint = `CHIEF COMPLAINT`) %>%
+  rename(Gender = GEN) %>%
+  rename(Discharge_Instruction = `DISCHARGE INSTRUCTIONS`) %>%
+  rename(Diagnosis = `FINAL IMPRESSION`) %>%
+  rename(Insurance = `Pri Name`) %>%
+  #rename(First.Physician = `PRIMARY PHYS`) %>%
+  #rename(Secondary.Ins = `Sec Name`) %>%
+  rename(STO.End = `STO - End`) %>%
+  rename(STO.Start = `STO - Start`)
+# Next we will create a column for STO ------------------------------------
+total_data <- mutate(total_data, STO = !is.na(STO.Start) | !is.na(STO.End))
+# Filter Data NULL to NULL Character  --------------------------
+total_data$Insurance[is.na(total_data$Insurance)] = "null"
+total_data$Complaint[is.na(total_data$Complaint)] = "null"
+total_data$Discharge_Instruction[is.na(total_data$Discharge_Instruction)] = "null"
+total_data$Diagnosis[is.na(total_data$Diagnosis)] = "null"
+
+write_xlsx(total_data,"C:\\Users\\f.karam\\Desktop\\total_data.xlsx")
+
+# Filter Data to Latest Date ----------------------------------------------
+
+filtered_data <- sqldf ("SELECT *
+                  FROM total_data
+                  WHERE DOS = (SELECT MAX(DOS) FROM total_data)")
+
+# Requested Data - Latest Date --------------------------------------------------------
+
+new_data <- sqldf ("select Facility
+
+              , count (*) as Total_Patients
+              
+              , count 
+              (case when 
+                    Insurance NOT IN ('null')
+                AND Insurance NOT IN ('NA')
+                AND Insurance NOT LIKE ('%self%') 
+                AND Insurance NOT LIKE ('%SELF%')
+                AND Insurance NOT LIKE ('%SELP%')
+                AND Insurance NOT LIKE ('%selp%')
+                AND Insurance NOT LIKE ('%SELP PAY%')
+                AND Insurance NOT LIKE ('%SELF PAY%')
+                AND Insurance NOT LIKE ('%SELF-PAY%')
+                AND Insurance NOT LIKE ('%SEL.F%')
+                AND Insurance NOT LIKE ('%sefl%')
+                AND Insurance NOT LIKE ('%SEFL%')
+                AND Insurance NOT LIKE ('%slef%')
+                AND Insurance NOT LIKE ('%SLEF%')
+                AND Insurance NOT LIKE ('%SALF%')
+                AND Insurance NOT LIKE ('%salf%')
+                AND Insurance NOT LIKE ('%LWBS%')
+                AND Insurance NOT LIKE ('%LWOBS%')
+                AND Insurance NOT LIKE ('%Left without being seen%')
+                AND Insurance NOT LIKE ('%MSE%')
+                AND Insurance NOT IN ('OBS')
+                AND Insurance NOT IN ('Short-Term Observation')
+                then Insurance else null end) 
+                as Insured_Patients
+                
+              , count 
+              (case when 
+                   Insurance IN ('null')
+                OR Insurance IN ('NA')
+                OR Insurance LIKE ('%self%') 
+                OR Insurance LIKE ('%SELF%') 
+                OR Insurance LIKE ('%SELP%') 
+                OR Insurance LIKE ('%selp%') 
+                OR Insurance LIKE ('%SELP PAY%') 
+                OR Insurance LIKE ('%SELF PAY%') 
+                OR Insurance LIKE ('%SELF-PAY%') 
+                OR Insurance LIKE ('%SEL.F%') 
+                OR Insurance LIKE ('%sefl%') 
+                OR Insurance LIKE ('%SEFL%') 
+                OR Insurance LIKE ('%slef%') 
+                OR Insurance LIKE ('%SLEF%')
+                OR Insurance LIKE ('%SALF%')
+                OR Insurance LIKE ('%salf%')
+                OR Insurance LIKE ('%LWBS%')
+                OR Insurance LIKE ('%LWOBS%')
+                OR Insurance LIKE ('%Left without being seen%')
+                OR Insurance LIKE ('%MSE%')
+                OR Insurance IN ('OBS')
+                OR Insurance IN ('Short-Term Observation')
+              then Insurance else null end) as Self_Pay
+              
+              , count 
+              (case when 
+                 STATUS IN ('LWBS', 'LWOBS', 'Left without being seen')
+              OR Insurance LIKE ('%LWBS%')
+              OR Insurance LIKE ('%LWOBS%')
+              OR Insurance LIKE ('%Left without being seen%') then STATUS else null end) as LWBS
+              
+              , count 
+              (case when 
+                 STATUS IN ('MSE') 
+              OR Insurance LIKE ('%MSE%') then STATUS else null end) as MSE
+              
+              , count 
+              (case when 
+                 STATUS IN ('OBS', 'Short-Term Observation') 
+              OR Insurance IN ('OBS')
+              OR Insurance IN ('Short-Term Observation') 
+              OR STO = 1 then STATUS else null end) as OBS
+              
+              , count 
+              (case when 
+                   Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%ovid%') 
+                OR Discharge_Instruction LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%CORONA%')
+                then DOS else null end) as COVID_Patients
+
+              , count (case when 
+                    Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%ovid%') 
+                AND Discharge_Instruction NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%CORONA%')
+                then DOS else null end) as NONCOVID_Patients
+                
+              from filtered_data 
+              group by Facility")
+
+
+# Requested Data - Grouped by Date  ---------------------------------------
+
+new_data_2 <- sqldf ("select Facility, DOS
+
+              , count (*) as Total_Patients
+              
+              , count 
+              (case when 
+                    Insurance NOT IN ('null')
+                AND Insurance NOT IN ('NA')
+                AND Insurance NOT LIKE ('%self%') 
+                AND Insurance NOT LIKE ('%SELF%')
+                AND Insurance NOT LIKE ('%SELP%')
+                AND Insurance NOT LIKE ('%selp%')
+                AND Insurance NOT LIKE ('%SELP PAY%')
+                AND Insurance NOT LIKE ('%SELF PAY%')
+                AND Insurance NOT LIKE ('%SELF-PAY%')
+                AND Insurance NOT LIKE ('%SEL.F%')
+                AND Insurance NOT LIKE ('%sefl%')
+                AND Insurance NOT LIKE ('%SEFL%')
+                AND Insurance NOT LIKE ('%slef%')
+                AND Insurance NOT LIKE ('%SLEF%')
+                AND Insurance NOT LIKE ('%SALF%')
+                AND Insurance NOT LIKE ('%salf%')
+                AND Insurance NOT LIKE ('%LWBS%')
+                AND Insurance NOT LIKE ('%LWOBS%')
+                AND Insurance NOT LIKE ('%Left without being seen%')
+                AND Insurance NOT LIKE ('%MSE%')
+                AND Insurance NOT IN ('OBS')
+                AND Insurance NOT IN ('Short-Term Observation')
+                then Insurance else null end) 
+                as Insured_Patients
+                
+              , count 
+              (case when 
+                   Insurance IN ('null')
+                OR Insurance IN ('NA')
+                OR Insurance LIKE ('%self%') 
+                OR Insurance LIKE ('%SELF%') 
+                OR Insurance LIKE ('%SELP%') 
+                OR Insurance LIKE ('%selp%') 
+                OR Insurance LIKE ('%SELP PAY%') 
+                OR Insurance LIKE ('%SELF PAY%') 
+                OR Insurance LIKE ('%SELF-PAY%') 
+                OR Insurance LIKE ('%SEL.F%') 
+                OR Insurance LIKE ('%sefl%') 
+                OR Insurance LIKE ('%SEFL%') 
+                OR Insurance LIKE ('%slef%') 
+                OR Insurance LIKE ('%SLEF%')
+                OR Insurance LIKE ('%SALF%')
+                OR Insurance LIKE ('%salf%')
+                OR Insurance LIKE ('%LWBS%')
+                OR Insurance LIKE ('%LWOBS%')
+                OR Insurance LIKE ('%Left without being seen%')
+                OR Insurance LIKE ('%MSE%')
+                OR Insurance IN ('OBS')
+                OR Insurance IN ('Short-Term Observation')
+              then Insurance else null end) as Self_Pay
+              
+              , count 
+              (case when 
+                 STATUS IN ('LWBS', 'LWOBS', 'Left without being seen')
+              OR Insurance LIKE ('%LWBS%')
+              OR Insurance LIKE ('%LWOBS%')
+              OR Insurance LIKE ('%Left without being seen%') then STATUS else null end) as LWBS
+              
+              , count 
+              (case when 
+                 STATUS IN ('MSE') 
+              OR Insurance LIKE ('%MSE%') then STATUS else null end) as MSE
+              
+              , count 
+              (case when 
+                 STATUS IN ('OBS', 'Short-Term Observation') 
+              OR Insurance IN ('OBS')
+              OR Insurance IN ('Short-Term Observation') 
+              OR STO = 1 then STATUS else null end) as OBS
+              
+              , count 
+              (case when 
+                   Complaint LIKE ('%COVID%')
+                OR Complaint LIKE ('%ovid%') 
+                OR Discharge_Instruction LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%COVID%')
+                OR Diagnosis LIKE ('%CORONA%')
+                then DOS else null end) as COVID_Patients
+
+              , count (case when 
+                    Complaint NOT LIKE ('%COVID%')
+                AND Complaint NOT LIKE ('%ovid%') 
+                AND Discharge_Instruction NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%COVID%')
+                AND Diagnosis NOT LIKE ('%CORONA%')
+                then DOS else null end) as NONCOVID_Patients
+                
+              from total_data 
+              group by Facility, DOS")
+
+
+
+write_xlsx(new_data_2,"C:\\Users\\f.karam\\Desktop\\delete1.xlsx")
+
+
