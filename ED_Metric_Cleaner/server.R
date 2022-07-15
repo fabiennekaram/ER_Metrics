@@ -204,6 +204,11 @@ new_and_old_data_joiner <- function(old_data = tibble(), new_data) {
       
       unadjusted_data <- filter(old_data, ARRIVE < min(new_data$ARRIVE))
       
+    } else {
+      
+      unadjusted_data <- old_data
+      total_new <- filter(total_new, !(HAN %in% unadjusted_data$HAN))
+      
     }
     
   } else {
